@@ -53,3 +53,7 @@ removed <- anti_join(temp, validation)
 edx <- rbind(edx, removed)
 
 rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+# Saving edx object as a file - optional
+
+# save(edx, file = "edx_movielist.RData")
