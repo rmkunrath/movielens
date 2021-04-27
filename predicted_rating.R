@@ -226,7 +226,7 @@ head(dat_peryear)
 # Plot object of mean rating per year. Polynom of order 4
 a <- ggplot(data = dat_peryear, aes(x = year, y = mean_rate)) +
   geom_point(alpha = 1, color = "blue") +
-  geom_smooth() +
+  geom_smooth(method='lm', formula = y~poly(x,1)) +
   xlab("Year") +
   ylab("Mean rating")
 # Plot object of total ratings per year
@@ -267,26 +267,6 @@ edx %>% filter(userId == 11129) %>% nrow()
 edx %>% filter(userId == 11129) %>% summarize(mean(rating))
 edx %>% filter(userId == 11129 & genres == "Horror")
 
-# # Lasty, checking if the prediction can be benefitted with regularization
-# 
-# # Lambda sequence
-# lambdas <- seq(-0.5, 2, 0.25)
-# 
-# # Applying lambda and regularizing rating
-# rmses <- sapply(lambdas, function(l){
-#   dat_guessing_mean<- edx %>% 
-#     group_by(movieId) %>% 
-#     summarise(movie_mean_rating = sum(rating)/(n() + l))
-#   table <- left_join(edx, dat_guessing_mean, by = "movieId")
-#   
-#   RMSE <- sqrt(mean((table$rating - table$movie_mean_rating)^2))
-#   return(RMSE)
-# })
-# 
-# # The prediction does not benefit from regularization
-# qplot(lambdas, rmses)  
-# lambdas[which.min(rmses)]
-
 # Cleaning the envinronment
 rm(dat_pergenres, dat_permovie, dat_peruser, dat_peryear, 
    year_vector, a, b, table, lambda, lambdas, RMSE, rmses, mu, dat_guessing_mean)
@@ -296,16 +276,11 @@ rm(dat_pergenres, dat_permovie, dat_peruser, dat_peryear,
 ####################################### Extracting useful values #######################################
 # It has been seen that there is information that seems to impact on the mean rating of a movie.
 # The information is:
-# Order of most viewed movies (1)
-# Order of users that most rate movies (2)
-# Order of genre rating (3)
+# Movie mean rating (1)
+# User mean rating (2)
+# Genre mean (3)
 # User mean rating per genre (4)
 # Year of the movie (5)
-
-# Other information that might be useful is the user mean rating and movie mean rating, as they were
-# used to get the insights
-# User mean rating (6)
-# Movie mean rating (7)
 
 # To make value of this information, it is going to be extracted from the data and
 # added to the table. 
@@ -314,36 +289,32 @@ rm(dat_pergenres, dat_permovie, dat_peruser, dat_peryear,
 add_useful_columns <- function(table){
 
 # table <- edx
-# (1) and (7)
-# Getting the total movie ratings column and movie mean rating
+# (1)
+# Movie mean rating
 
 mu <- mean(table$rating)
   
 dat_permovie <- table %>% 
   group_by(movieId) %>% 
-  summarise(log10_total_movie_ratings = log10(sum(userId != 0)), movie_mean_rating = mean(rating)) %>% 
-  arrange(desc(log10_total_movie_ratings))
+  summarise(movie_mean_rating = mean(rating))
 
 # Adding the column
 table <- left_join(table, dat_permovie, by = "movieId")
 
-# (2) and (6)
-# Getting the log total user ratings column and user rating
+# (2)
+# user mean rating
 dat_peruser <- table %>% 
   group_by(userId) %>% 
-  summarise(total_user_ratings_rank = sum(userId != 0), user_mean_rating = mean(rating)) %>% 
-  mutate(total_user_ratings_rank = rank(total_user_ratings_rank)) %>%
-  arrange(desc(total_user_ratings_rank))
+  summarise(user_mean_rating = mean(rating))
 
 # Adding the column
 table <- left_join(table, dat_peruser, by = "userId")
 
 # (3)
-# Getting genre rank
+# Getting genre mean
 dat_pergenres <- table %>% 
   group_by(genres) %>% 
-  summarise(genre_rank = mean(rating)) %>% 
-  mutate(genre_rank = rank(genre_rank))
+  summarise(genre_mean_rating = mean(rating))
 
 # Adding the column
 table <- left_join(table, dat_pergenres, by = "genres")
@@ -378,7 +349,7 @@ return(table)
 edx <- add_useful_columns(edx)
 
 ########################################################################################################
-# Partitioning the data in test and train set
+# Partitioning the data in test and train set. Creating RSME function
 ########################################################################################################
 
 
@@ -392,15 +363,14 @@ test_set <- edx %>% slice(test_index)
 
 rm(test_index)
 
-# # Ensures test set has the same variables
-# test_set <- test_set %>% 
-#   semi_join(train_set, by = "movieId") %>%
-#   semi_join(train_set, by = "userId")
-
 # Creating a function to return the root-mean-square deviation
 RMSE <- function(true_ratings, predicted_ratings){
   sqrt(mean((true_ratings - predicted_ratings)^2))
 }
+
+########################################################################################################
+# Creating a model
+########################################################################################################
 
 # Determining a mean rate and predict it
 mu_hat <- mean(train_set$rating)
@@ -453,7 +423,7 @@ rmse_results
 # head(edx)
 
 lm_fit <- train_set %>%
-  lm(rating ~ movie_mean_rating + user_mean_rating + user_genre_mean + log10_total_movie_ratings + total_user_ratings_rank + genre_rank + year, data=.)
+  lm(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + user_genre_mean + year, data=.)
 
 mu_hat_linear <- predict(lm_fit, newdata = test_set, type = "response")
 
@@ -489,13 +459,11 @@ tidy(lm_fit)
 # Actually seeing as the coefficients relate to prediction
 
 lm_fit$coefficients[1]
-lm_fit$coefficients[2] * mean(test_set$movie_mean_rating)
+lm_fit$coefficients[2] * mean(test_set$movie_mean_rating )
 lm_fit$coefficients[3] * mean(test_set$user_mean_rating)
-lm_fit$coefficients[4] * mean(test_set$user_genre_mean)
-lm_fit$coefficients[5] * mean(test_set$log10_total_movie_ratings)
-lm_fit$coefficients[6] * mean(test_set$total_user_ratings_rank)
-lm_fit$coefficients[7] * mean(test_set$genre_rank)
-lm_fit$coefficients[8] * mean(test_set$year)
+lm_fit$coefficients[4] * mean(test_set$genre_mean_rating)
+lm_fit$coefficients[5] * mean(test_set$user_genre_mean)
+lm_fit$coefficients[6] * mean(test_set$year)
 
 #####
 
@@ -647,7 +615,7 @@ rm(test_index)
 
 # Only using first 4 primary components
 lm_fit_PCA <- train_set %>%
-  lm(rating ~ movie_mean_rating + user_mean_rating + user_genre_mean + log10_total_movie_ratings + total_user_ratings_rank + genre_rank + year 
+  lm(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + user_genre_mean + year 
      + PC1 + PC2 + PC3 + PC4, data=.)
 
 mu_hat_linear_PCA <- predict(lm_fit_PCA, newdata = test_set, type = "response")
@@ -719,7 +687,7 @@ rm(pca, lm_fit_PCA, y, s, mu_hat_linear_PCA, rank_20, movie_mean_rmse, movie_use
 library(mgcv)
 
 gam_fit <- train_set %>%
-  gam(rating ~ movie_mean_rating + user_mean_rating + user_genre_mean + log10_total_movie_ratings + total_user_ratings_rank + genre_rank + year, data=.)
+  gam(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + user_genre_mean + year, data=.)
 
 mu_hat_gam <- predict(gam_fit, newdata = test_set)
 
@@ -731,6 +699,10 @@ rmse_results <- bind_rows(rmse_results, data_frame(method="GAM", RMSE = gam_rmse
 rmse_results
 
 rm(gam_fit, mu_hat_gam, gam_rmse)
+
+########################################################################################################
+# Predicting the model
+########################################################################################################
 
 #################### Chosen ####################
 # The best method was linear regression
@@ -754,7 +726,7 @@ lm_rmse
 # For this reason, a new regression without considering the genre at all is presented
 
 lm_fit_without_genre <- train_set %>%
-  lm(rating ~ movie_mean_rating + user_mean_rating + log10_total_movie_ratings + total_user_ratings_rank + genre_rank + year, data=.)
+  lm(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + year, data=.)
 
 mu_hat_linear_without_genre <- predict(lm_fit_without_genre, newdata = validation, type = "response")
 
