@@ -29,10 +29,10 @@ colnames(movies) <- c("movieId", "title", "genres")
 movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
                                            title = as.character(title),
                                            genres = as.character(genres))
-# if using R 4.0 or later:
-movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
-                                           title = as.character(title),
-                                           genres = as.character(genres))
+# # if using R 4.0 or later:
+# movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+#                                            title = as.character(title),
+#                                            genres = as.character(genres))
 
 
 movielens <- left_join(ratings, movies, by = "movieId")
@@ -96,9 +96,10 @@ library(broom)
 
 ############################################## Exploring ###############################################
 
-# With a brief look at edx we can see that the column title also contains the year and genres are
-# somehow aggregated
+# With a brief look at edx we can see that the column title also contains the year and genres are somehow aggregated
+  
 head(edx)
+nrow(edx)
 
 # Also, we can see that the 9000055 entries are comprized of 69878 users and 10677 
 # movies, with a mean rating of 3.5 and a standard deviation of 1
@@ -112,8 +113,8 @@ edx %>% summarise(mean = mean(rating), sd = sd(rating))
 # Users do no tend to give half star ratings.
 edx %>% ggplot(aes(rating)) + geom_histogram()
 
-# The movies have a rating distribution that is far from linear. Most part of the ratings are comprized in 
-# few movies.
+# The movies have a rating distribution that is far from linear. 
+# Most part of the ratings are comprized in a few movies.
 # Creating an object that contains total ratings and the mean rating per movie
 dat_permovie <- edx %>% 
   group_by(title) %>% 
@@ -138,7 +139,6 @@ dat_permovie %>%
   xlab("Total ratings") +
   ylab("Rating")
 
-
 # Movies mean and sd ratings
 dat_permovie %>% summarize(mean = mean(mean_rate), sd = sd(mean_rate))
 # Top 100 movies mean and sd ratings
@@ -148,10 +148,9 @@ dat_permovie %>% top_n(1000, wt = totalratings) %>% summarize(mean = mean(mean_r
 # Rest of users mean and sd ratings
 dat_permovie %>% top_n(-(10676-1000), wt = totalratings) %>% summarize(mean = mean(mean_rate), sd = sd(mean_rate))
 
-
-# The users also have a rating distribution that is far from linear. Most part of the ratings are comprized in 
-# few users
-# Creating an object that contains total ratings and the mean rating per user
+# The users also have a rating distribution that is far from linear. 
+# Most part of the ratings are comprized in few users.
+# Creating an object that contains total ratings and the mean rating per user.
 dat_peruser <- edx %>% 
   group_by(userId) %>% 
   summarise(totalratings = sum(userId != 0), mean_rate = mean(rating)) %>% 
@@ -173,7 +172,6 @@ dat_peruser %>%
   geom_smooth() +
   xlab("User rank") +
   ylab("Rating")
-
 
 # Users mean and sd ratings
 dat_peruser %>% summarize(mean = mean(mean_rate), sd = sd(mean_rate))
@@ -321,8 +319,7 @@ table <- left_join(table, dat_pergenres, by = "genres")
 
 # (4)
 # Getting user mean per genre
-# To not overtrain the mean, only considering where there is more than 4
-# ratings per genre. 
+# To not overtrain the mean, only considering where there is more than 4 ratings per genre. 
 # If not, considering the average between user mean rating and movie mean rating
 table <- table %>% 
   group_by(genres, userId) %>% 
@@ -483,206 +480,209 @@ lm_limited_rmse
 rmse_results <- bind_rows(rmse_results, data_frame(method="Linear regression limited", RMSE = lm_limited_rmse ))
 rmse_results
 
-###############################################################
-# Getting principal components for user specific taste of genre
-
-######################
-# Considering pareto (80/20) law, 80% of variance is from 20% of the data
-# Let us explore where 20% of variance is.
-
-test_set_with_estimate <- test_set %>%
-  mutate(estimate = mu_hat_linear) %>%
-  mutate(diff_sq = as.integer((rating - estimate)^2))
-
-head(test_set_with_estimate)
-
-# The top 5000 users present larger variance
-test_set_with_estimate %>%
-  group_by(total_user_ratings_rank) %>%
-  summarise(mean = mean(diff_sq)) %>%
-  ggplot(aes(69878-total_user_ratings_rank, mean)) +
-  geom_point(alpha = 0.2) +
-  xlab("Top users")
-
-# Error per movie ratings doesn't seem to have a great variance
-test_set_with_estimate %>%
-  group_by(movie_mean_rating) %>%
-  summarise(mean = mean(diff_sq)) %>%
-  ggplot(aes(movie_mean_rating, mean)) +
-  geom_point(alpha = 0.2) +
-  xlab("Movie ratings")
-
-# Error is larger for users with mean rating lower than 3.5 stars
-# This is also correlated with users with more ratings
-test_set_with_estimate %>%
-  group_by(user_mean_rating) %>%
-  summarise(mean = mean(diff_sq)) %>%
-  ggplot(aes(user_mean_rating, mean)) +
-  geom_point(alpha = 0.2) +
-  xlab("User mean rating")
-
-# Gender rank does't seem to affect much the variance
-test_set_with_estimate %>%
-  group_by(genre_rank) %>%
-  summarise(mean = mean(diff_sq)) %>%
-  ggplot(aes(genre_rank, mean)) +
-  geom_point(alpha = 0.2) +
-  xlab("Genre rank")
-
-rm(test_set_with_estimate)
-
-#####################
-# filtering top 5000 users rank and and lower than 3.5 stars mean
-
-rank_20 <- 0.9*max(edx$total_user_ratings_rank)
-
-data20 <- edx %>%
-  filter(user_mean_rating < 3.0 & total_user_ratings_rank > rank_20)
-
-
-data20 <- data20 %>%
-  group_by(genre_rank, userId) %>%
-  summarise(mean_genre = mean(rating))
-
-y <- data20 %>% 
-  select(userId, genre_rank, mean_genre) %>%
-  spread(genre_rank, mean_genre) %>%
-  as.matrix()
-
-rownames(y)<- y[,1]
-y <- y[,-1]
-
-genre_titles <- edx %>% 
-  select(genre_rank, genres) %>%
-  distinct()
-
-colnames(y) <- with(genre_titles, genres[match(colnames(y), genre_rank)])
-
-### SVD and PCA
-
-y[is.na(y)] <- mu_hat
-
-y <- sweep(y, 1, rowMeans(y))
-pca <- prcomp(y)
-
-dim(pca$rotation)
-
-dim(pca$x)
-
-plot(pca$sdev)
-
-# Seeing that the first PCs do not cover much of the data, being PC1 and PC2 total acumulation
-# of only 6%
-s <- summary(pca)    # see PC1 Cumulative Proportion
-str(s)
-s$importance[3,]
-
-# PC1 seems to relate to genres with a more complicated plot and movies easy to watch
-
-library(ggrepel)
-pcs <- data.frame(pca$rotation, name = colnames(y))
-pcs %>%  ggplot(aes(PC1, PC2)) + geom_point() + 
-  geom_text_repel(aes(PC1, PC2, label=name),
-                  data = filter(pcs, 
-                                PC1 < -0.05 | PC1 > 0.075))
-
-# PC2 seems to relate to horror and children movies
-pcs %>%  ggplot(aes(PC1, PC2)) + geom_point() + 
-  geom_text_repel(aes(PC1, PC2, label=name),
-                  data = filter(pcs, 
-                                PC2 < -0.075 | PC2 > 0.05))
-
-user_preference <- data.frame(pca$x[,1:13])
-user_preferenceID <- user_preference %>% mutate(userId = as.integer(rownames(user_preference)))
-
-# save(user_preferenceID, file = "user_preferenceID_PCA.RData")
-# Load table with principal components
-ifelse(exists("user_preferenceID"), "user_preferenceID already exists", load("user_preferenceID_PCA.RData"))
-
-# Adding PCs to the table and applying 0 to NAs
-edx <- left_join(edx, user_preferenceID, by = "userId")
-edx[is.na(edx)] <- 0
-
-# Re-aplying the Linear regression
-
-# Leaving 20% of the data to test and creating test and train set
-test_index <- createDataPartition(y = edx$rating, times = 1,
-                                  p = 0.2, list = FALSE)
-train_set <- edx %>% slice(-test_index)
-test_set <- edx %>% slice(test_index)
-
-rm(test_index)
-
-# Only using first 4 primary components
-lm_fit_PCA <- train_set %>%
-  lm(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + user_genre_mean + year 
-     + PC1 + PC2 + PC3 + PC4, data=.)
-
-mu_hat_linear_PCA <- predict(lm_fit_PCA, newdata = test_set, type = "response")
-
-lm_PCA_rmse <- RMSE(test_set$rating, mu_hat_linear_PCA)
-lm_PCA_rmse
-
-# There is no great change, so it does not worth the computational effort
-rmse_results <- bind_rows(rmse_results, data_frame(method="LM+PCA", RMSE = lm_PCA_rmse ))
-rmse_results
-
-#########################################################################
-# Verifying if there are PCs that relate to usedId and movieId
-# Using pareto (80/20) law, filtering first 20% of userId and movieId to get 80% of relevance.
-# For the size of the dataset, just to get an insight.
-######################
-
-rank_20 <- 0.9*max(edx$total_user_ratings_rank)
-
-data20 <- edx %>%
-  filter(user_mean_rating < 3.0 & total_user_ratings_rank > rank_20)
-
-# rm(user_20, movie_20, top_20)
-
-y <- data20 %>% 
-  select(userId, movieId, rating) %>%
-  spread(movieId, rating) %>%
-  as.matrix()
-
-rownames(y)<- y[,1]
-y <- y[,-1]
-
-movie_titles <- edx %>% 
-  select(movieId, title) %>%
-  distinct()
-
-colnames(y) <- with(movie_titles, title[match(colnames(y), movieId)])
-
-### SVD and PCA
-# This process takes a long time.
-
-y[is.na(y)] <- mu_hat
-
-y <- sweep(y, 1, rowMeans(y))
-pca <- prcomp(y)
-
-dim(pca$rotation)
-
-dim(pca$x)
-
-plot(pca$sdev)
-
-# Seeing that the first PCs do not cover much of the data, being PC1 and PC2 total acumulation
-# of only 5%
-s <- summary(pca)    # see PC1 Cumulative Proportion
-str(s)
-s$importance[3,]
-
-# Like with gender PCs, it is not worth the computational expenditure
-
-rm(pca, lm_fit_PCA, y, s, mu_hat_linear_PCA, rank_20, movie_mean_rmse, movie_user_mean_rmse, lm_PCA_rmse,
-   data20, movie_titles, genre_titles, user_preference, user_preferenceID, pcs)
+# ###############################################################
+# # Getting principal components for user specific taste of genre.
+# 
+# # The whole session was commented. Just remove the coments with Ctrl+Shift+C to give it a try.
+# # WARNING - This process takes a long time.
+# 
+# ######################
+# # Considering pareto (80/20) law, 80% of variance is from 20% of the data
+# # Let us explore where 20% of variance is.
+# 
+# test_set_with_estimate <- test_set %>%
+#   mutate(estimate = mu_hat_linear) %>%
+#   mutate(diff_sq = as.integer((rating - estimate)^2))
+# 
+# head(test_set_with_estimate)
+# 
+# # The top 5000 users present larger variance
+# test_set_with_estimate %>%
+#   group_by(total_user_ratings_rank) %>%
+#   summarise(mean = mean(diff_sq)) %>%
+#   ggplot(aes(69878-total_user_ratings_rank, mean)) +
+#   geom_point(alpha = 0.2) +
+#   xlab("Top users")
+# 
+# # Error per movie ratings doesn't seem to have a great variance
+# test_set_with_estimate %>%
+#   group_by(movie_mean_rating) %>%
+#   summarise(mean = mean(diff_sq)) %>%
+#   ggplot(aes(movie_mean_rating, mean)) +
+#   geom_point(alpha = 0.2) +
+#   xlab("Movie ratings")
+# 
+# # Error is larger for users with mean rating lower than 3.5 stars
+# # This is also correlated with users with more ratings
+# test_set_with_estimate %>%
+#   group_by(user_mean_rating) %>%
+#   summarise(mean = mean(diff_sq)) %>%
+#   ggplot(aes(user_mean_rating, mean)) +
+#   geom_point(alpha = 0.2) +
+#   xlab("User mean rating")
+# 
+# # Gender rank does't seem to affect much the variance
+# test_set_with_estimate %>%
+#   group_by(genre_rank) %>%
+#   summarise(mean = mean(diff_sq)) %>%
+#   ggplot(aes(genre_rank, mean)) +
+#   geom_point(alpha = 0.2) +
+#   xlab("Genre rank")
+# 
+# rm(test_set_with_estimate)
+# 
+# #####################
+# # filtering top 5000 users rank and and lower than 3.5 stars mean
+# 
+# rank_20 <- 0.9*max(edx$total_user_ratings_rank)
+# 
+# data20 <- edx %>%
+#   filter(user_mean_rating < 3.0 & total_user_ratings_rank > rank_20)
+# 
+# 
+# data20 <- data20 %>%
+#   group_by(genre_rank, userId) %>%
+#   summarise(mean_genre = mean(rating))
+# 
+# y <- data20 %>%
+#   select(userId, genre_rank, mean_genre) %>%
+#   spread(genre_rank, mean_genre) %>%
+#   as.matrix()
+# 
+# rownames(y)<- y[,1]
+# y <- y[,-1]
+# 
+# genre_titles <- edx %>%
+#   select(genre_rank, genres) %>%
+#   distinct()
+# 
+# colnames(y) <- with(genre_titles, genres[match(colnames(y), genre_rank)])
+# 
+# ### SVD and PCA
+# 
+# y[is.na(y)] <- mu_hat
+# 
+# y <- sweep(y, 1, rowMeans(y))
+# pca <- prcomp(y)
+# 
+# dim(pca$rotation)
+# 
+# dim(pca$x)
+# 
+# plot(pca$sdev)
+# 
+# # Seeing that the first PCs do not cover much of the data, being PC1 and PC2 total acumulation
+# # of only 6%
+# s <- summary(pca)    # see PC1 Cumulative Proportion
+# str(s)
+# s$importance[3,]
+# 
+# # PC1 seems to relate to genres with a more complicated plot and movies easy to watch
+# 
+# library(ggrepel)
+# pcs <- data.frame(pca$rotation, name = colnames(y))
+# pcs %>%  ggplot(aes(PC1, PC2)) + geom_point() +
+#   geom_text_repel(aes(PC1, PC2, label=name),
+#                   data = filter(pcs,
+#                                 PC1 < -0.05 | PC1 > 0.075))
+# 
+# # PC2 seems to relate to horror and children movies
+# pcs %>%  ggplot(aes(PC1, PC2)) + geom_point() +
+#   geom_text_repel(aes(PC1, PC2, label=name),
+#                   data = filter(pcs,
+#                                 PC2 < -0.075 | PC2 > 0.05))
+# 
+# user_preference <- data.frame(pca$x[,1:13])
+# user_preferenceID <- user_preference %>% mutate(userId = as.integer(rownames(user_preference)))
+# 
+# # save(user_preferenceID, file = "user_preferenceID_PCA.RData")
+# # Load table with principal components
+# ifelse(exists("user_preferenceID"), "user_preferenceID already exists", load("user_preferenceID_PCA.RData"))
+# 
+# # Adding PCs to the table and applying 0 to NAs
+# edx <- left_join(edx, user_preferenceID, by = "userId")
+# edx[is.na(edx)] <- 0
+# 
+# # Re-aplying the Linear regression
+# 
+# # Leaving 20% of the data to test and creating test and train set
+# test_index <- createDataPartition(y = edx$rating, times = 1,
+#                                   p = 0.2, list = FALSE)
+# train_set <- edx %>% slice(-test_index)
+# test_set <- edx %>% slice(test_index)
+# 
+# rm(test_index)
+# 
+# # Only using first 4 primary components
+# lm_fit_PCA <- train_set %>%
+#   lm(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + user_genre_mean + year
+#      + PC1 + PC2 + PC3 + PC4, data=.)
+# 
+# mu_hat_linear_PCA <- predict(lm_fit_PCA, newdata = test_set, type = "response")
+# 
+# lm_PCA_rmse <- RMSE(test_set$rating, mu_hat_linear_PCA)
+# lm_PCA_rmse
+# 
+# # There is no great change, so it does not worth the computational effort
+# rmse_results <- bind_rows(rmse_results, data_frame(method="LM+PCA", RMSE = lm_PCA_rmse ))
+# rmse_results
+# 
+# #########################################################################
+# # Verifying if there are PCs that relate to usedId and movieId
+# # Using pareto (80/20) law, filtering first 20% of userId and movieId to get 80% of relevance.
+# # For the size of the dataset, just to get an insight.
+# ######################
+# 
+# rank_20 <- 0.9*max(edx$total_user_ratings_rank)
+# 
+# data20 <- edx %>%
+#   filter(user_mean_rating < 3.0 & total_user_ratings_rank > rank_20)
+# 
+# # rm(user_20, movie_20, top_20)
+# 
+# y <- data20 %>%
+#   select(userId, movieId, rating) %>%
+#   spread(movieId, rating) %>%
+#   as.matrix()
+# 
+# rownames(y)<- y[,1]
+# y <- y[,-1]
+# 
+# movie_titles <- edx %>%
+#   select(movieId, title) %>%
+#   distinct()
+# 
+# colnames(y) <- with(movie_titles, title[match(colnames(y), movieId)])
+# 
+# ### SVD and PCA
+# # This process takes a long time.
+# 
+# y[is.na(y)] <- mu_hat
+# 
+# y <- sweep(y, 1, rowMeans(y))
+# pca <- prcomp(y)
+# 
+# dim(pca$rotation)
+# 
+# dim(pca$x)
+# 
+# plot(pca$sdev)
+# 
+# # Seeing that the first PCs do not cover much of the data, being PC1 and PC2 total acumulation
+# # of only 5%
+# s <- summary(pca)    # see PC1 Cumulative Proportion
+# str(s)
+# s$importance[3,]
+# 
+# # Like with gender PCs, it is not worth the computational expenditure
+# 
+# rm(pca, lm_fit_PCA, y, s, mu_hat_linear_PCA, rank_20, movie_mean_rmse, movie_user_mean_rmse, lm_PCA_rmse,
+#    data20, movie_titles, genre_titles, user_preference, user_preferenceID, pcs)
 
 ##########################################
-# We noticed that the PCs did not woth the trouble.
+# We noticed that the PCs did not worth the trouble.
 # Can we still get a better prediction? During data exploration we saw that many values, like the year,
-# was not linear. Let us try with the very smooth used in ggplot mgcv::gam()
+# were not linear. Let us try with the very smooth used in ggplot mgcv::gam()
 
 library(mgcv)
 

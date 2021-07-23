@@ -1,0 +1,746 @@
+---
+title: "MovieLens Project"
+author: "Rodrigo Moraes Kunrath"
+date: "5/25/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=60), tidy=TRUE, echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# Introduction
+
+In order to create a movie recommendation system a machine learning algorithim was built in R. This project is part of the Data Science Professional Certificate from HarvardX.
+
+The objective of the machine learning algorithim is to get the best possible rating guess. The general idea is to aim for the lowest possible root-mean-square error (RSME) without overtraining the model.
+
+As the solution to the proposed problem was iterativelly determined during the coding development, this report must also to be followed through the code and its comments.
+
+## The dataset
+
+The dataset used is MovieLens 10MB and it can be found in https://grouplens.org/datasets/movielens/10m/. This dataset was downloaded and subsequently divided into a validation and a training dataset. These were called *validation* and *edx* in the given order.
+
+
+```{r downloading_dataset, include=FALSE}
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 3.6 or earlier:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+# if using R 4.0 or later:
+# movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+#                                            title = as.character(title),
+#                                            genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+The dataset is comprised of 10000054 ratings and carries information as shown in the code bellow.
+
+
+```{r showing_dataset, echo=TRUE}
+nrow(edx) + nrow(validation)
+
+head(edx)
+```
+
+## Steps performed
+
+In order to approach the problem, the first step performed was exploring the dataset and trying to see if any insight can be obtained from this exploration. Secondly, the data was wrangled for better prediction.
+Subsequently, the *edx* dataset was divided in a training and a testing datasets and an evaluation RSME function was created.
+
+Once all the steps above were performed, a modelling phase began. Different approaches were developed and a final cost-benefit solution was chosen.
+
+Finally the model was applied to the *validation* dataset.
+
+The whole operation is discribed in the following section and is structured in the comments.
+
+# Methods
+
+```{r basic_functions, include=FALSE}
+library(tidyverse)
+library(caret)
+library(stringr)
+library(lubridate)
+library(broom)
+```
+## Data Exploration
+
+With a brief look at edx we can see that the column title also contains the year and genres are somehow aggregated.
+
+
+```{r}
+head(edx)
+nrow(edx)
+```
+
+
+Also, we can see that the 9000055 entries are comprized of 69878 users and 10677 movies, with a mean rating of 3.5 and a standard deviation of 1.
+
+
+```{r}
+edx %>% summarize(n_row = nrow(.),
+                  n_users = n_distinct(userId),
+                  n_movies = n_distinct(movieId))
+
+edx %>% summarise(mean = mean(rating), sd = sd(rating))
+```
+
+
+Users do not tend to give half star ratings.
+
+
+```{r}
+edx %>% ggplot(aes(rating)) + geom_histogram()
+```
+
+
+The movies have a rating distribution that is far from homogeneous. 
+Most part of the ratings are comprized in a few movies.
+
+
+```{r}
+# Creating an object that contains total ratings and the mean rating per movie
+dat_permovie <- edx %>% 
+  group_by(title) %>% 
+  summarise(totalratings = sum(userId != 0), mean_rate = mean(rating)) %>% 
+  arrange(desc(totalratings))
+
+# Plotting the total amount of ratings per rank in logarithmic scale
+dat_permovie %>% 
+  ggplot(aes(10677-rank(totalratings), totalratings)) +
+  geom_line() +
+  scale_x_log10() + 
+  xlab("Top n movies") +
+  ylab("Total amount of ratings")
+```
+
+
+The most viewed movies are, unsurprisingly, the ones with better mean ratings.
+
+
+```{r}
+# Plotting the ratings per rank in logarithmic scale.
+dat_permovie %>% 
+  ggplot(aes(totalratings, mean_rate)) +
+  geom_point(alpha = 0.2) +
+  scale_x_log10() +
+  geom_smooth() +
+  xlab("Total ratings") +
+  ylab("Rating")
+```
+
+
+We can see that the top 100 movies have a higher mean rating than top 1000 and the rest of the movies.
+
+
+```{r}
+# Movies mean and sd ratings
+dat_permovie %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+# Top 100 movies mean and sd ratings
+dat_permovie %>% 
+        top_n(100, wt = totalratings) %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+# Top 1000 movies mean and sd ratings
+dat_permovie %>% 
+        top_n(1000, wt = totalratings) %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+# Rest of users mean and sd ratings
+dat_permovie %>% 
+        top_n(-(10676-1000), wt = totalratings) %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+```
+
+
+The users also have a rating distribution that is far from uniform.
+
+Most part of the ratings are comprized in few users.
+
+
+```{r}
+# Creating an object that contains total ratings and the mean rating per user.
+dat_peruser <- edx %>% 
+  group_by(userId) %>% 
+  summarise(totalratings = sum(userId != 0), mean_rate = mean(rating)) %>% 
+  arrange(desc(totalratings))
+
+# Plotting the total amount of ratings per rank in logarithmic scale
+dat_peruser %>% 
+  ggplot(aes(69878-rank(totalratings), totalratings)) + # 69878 is the total user count
+  geom_line() +
+  scale_x_log10() + 
+  xlab("Top n users") +
+  ylab("Total amount of ratings")
+```
+
+
+Users that assess more movies also tend to be more critical with their reviews.
+
+
+```{r}
+# Plotting the ratings per rank. Polynom of order 5
+dat_peruser %>% 
+  ggplot(aes(rank(totalratings), mean_rate)) + # 69878 is the total movie count
+  geom_point(alpha = 0.2) +
+  geom_smooth() +
+  xlab("User rank") +
+  ylab("Rating")
+
+# Users mean and sd ratings
+dat_peruser %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+# Top 1000 users mean and sd ratings
+dat_peruser %>% 
+        top_n(1000, wt = totalratings) %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+# Rest of users mean and sd ratings
+dat_peruser %>% 
+        top_n(-(69878-1000), wt = totalratings) %>% 
+        summarize(mean = mean(mean_rate), sd = sd(mean_rate))
+```
+
+
+Exploring whether the genre can affect mean rating.
+
+
+```{r}
+# Creating and object with movie ratings per genre.
+dat_pergenres <- edx %>% group_by(genres) %>% 
+  summarize(mean = mean(rating), sd = sd(rating), total_ratings = sum(userId != 0)) %>% 
+  arrange(desc(mean))
+
+head(dat_pergenres)
+```
+
+
+Different genres have also different means and standard deviations.
+
+
+```{r}
+edx %>% summarise(mean = mean(rating), sd = sd(rating))
+edx %>% filter(str_detect(genres, "Drama")) %>% 
+        summarise(mean = mean(rating), sd = sd(rating))
+edx %>% filter(str_detect(genres, "Film-Noir")) %>% 
+        summarise(mean = mean(rating), sd = sd(rating))
+edx %>% filter(str_detect(genres, "Mystery")) %>% 
+        summarise(mean = mean(rating), sd = sd(rating))
+edx %>% filter(str_detect(genres, "Horror")) %>% 
+        summarise(mean = mean(rating), sd = sd(rating))
+edx %>% filter(str_detect(genres, "Comedy")) %>% 
+        summarise(mean = mean(rating), sd = sd(rating))
+edx %>% filter(str_detect(genres, "Children")) %>% 
+        summarise(mean = mean(rating), sd = sd(rating))
+
+# Plotting aggregated genres and their mean. 
+# It looks like a cotangent function. Polynom of order 5
+dat_pergenres %>%
+  ggplot(aes(rank(mean), mean)) + # 797 is the total genre count
+  geom_line() +  
+  geom_smooth() +
+  xlab("Genre rank") +
+  ylab("Mean rating")
+```
+
+
+Verifying if the year influences the mean rating. To do that, it is necessary to extract the year from the table.
+
+
+```{r}
+# Getting the year within the parenthesis
+year_vector <- str_extract(edx$title, "\\(\\d\\d\\d\\d\\)")
+# Removing the parenthesis
+year_vector <- substring(year_vector, 2, nchar(year_vector)-1)
+# Converting to numeric
+year_vector <- as.numeric(year_vector)
+
+# Creating an object that contains the year
+dat_peryear <- edx %>% mutate(year = year_vector)
+dat_peryear <- dat_peryear %>% group_by(year) %>% 
+        summarise(totalratings = sum(userId != 0), mean_rate = mean(rating))
+
+head(dat_peryear)
+
+# Plot object of mean rating per year.
+a <- ggplot(data = dat_peryear, aes(x = year, y = mean_rate)) +
+  geom_point(alpha = 1, color = "blue") +
+  geom_smooth(method='lm', formula = y~poly(x,1)) +
+  xlab("Year") +
+  ylab("Mean rating")
+# Plot object of total ratings per year
+b <- ggplot(data = dat_peryear, aes(x = year, y = totalratings)) +
+  geom_point(alpha = 1, color = "red") +
+  xlab("Year") +
+  scale_y_log10() +
+  ylab("Number of ratings")
+
+# Arranged plot of mean ratings and year
+require(gridExtra)
+grid.arrange(a, b)
+```
+
+
+When verifying if timestamp affects rating, it was seen that the rating year affects the mean, but not much. Nonetheless, the month and weekday seems to not alter it substantially.
+
+
+```{r}
+edx %>% 
+  mutate(rating_year = year(as_datetime(timestamp))) %>%
+  group_by(rating_year) %>%
+  summarise(mean = mean(rating))
+
+edx %>% 
+  mutate(rating_month = month(as_datetime(timestamp))) %>%
+  group_by(rating_month) %>%
+  summarise(mean = mean(rating))
+
+edx %>% 
+  mutate(rating_weekday = wday(as_datetime(timestamp))) %>%
+  group_by(rating_weekday) %>%
+  summarise(mean = mean(rating))
+```
+
+
+Now the user gender preference is going to be verifyed. It is somewhat logic that users may have specific taste per genre.
+
+For instance, user 11129 has more than 375 ratings and a mean rating of 4.1. Nevertheless, the user doesn't like Horror movies. This should be taken into account.
+
+
+```{r}
+edx %>% filter(userId == 11129) %>% nrow()
+edx %>% filter(userId == 11129) %>% summarize(mean(rating))
+edx %>% filter(userId == 11129 & genres == "Horror")
+```
+
+
+```{r include=FALSE}
+# Cleaning the envinronment
+rm(dat_pergenres, dat_permovie, dat_peruser, dat_peryear, 
+   year_vector, a, b, table, lambda, lambdas, RMSE, rmses, mu, dat_guessing_mean)
+```
+
+## Data Wrangling
+
+It has been seen that there is information that seems to impact on the mean rating of a movie. The information is:
+
+    Movie mean rating (1)
+    User mean rating (2)
+    Genre mean (3)
+    User mean rating per genre (4)
+    Year of the movie (5)
+
+To make value of this information, it is going to be extracted from the data and added to the table. In short, the following code was developed to wrangle the data. 
+It was developed in a function in order to better replicate in the final dataset.
+
+
+```{r data_wrangling}
+
+add_useful_columns <- function(table){
+
+# (1)
+# Movie mean rating
+
+mu <- mean(table$rating)
+  
+dat_permovie <- table %>% 
+  group_by(movieId) %>% 
+  summarise(movie_mean_rating = mean(rating))
+
+# Adding the column
+table <- left_join(table, dat_permovie, by = "movieId")
+
+# (2)
+# user mean rating
+dat_peruser <- table %>% 
+  group_by(userId) %>% 
+  summarise(user_mean_rating = mean(rating))
+
+# Adding the column
+table <- left_join(table, dat_peruser, by = "userId")
+
+# (3)
+# Getting genre mean
+dat_pergenres <- table %>% 
+  group_by(genres) %>% 
+  summarise(genre_mean_rating = mean(rating))
+
+# Adding the column
+table <- left_join(table, dat_pergenres, by = "genres")
+
+# (4)
+# Getting user mean per genre
+# To not overtrain the mean, only considering where there is more than 4 ratings 
+# per genre. 
+# If not, considering the average between user mean rating and movie mean rating
+table <- table %>% 
+  group_by(genres, userId) %>% 
+  mutate(user_genre_mean = ifelse(n() >= 4, mean(rating), 
+                                  (user_mean_rating+movie_mean_rating)/2)) %>%
+  ungroup()
+
+
+# (5)
+# Getting the year
+# Getting the year within the parenthesis
+year_vector <- str_extract(table$title, "\\(\\d\\d\\d\\d\\)")
+# Removing the parenthesis
+year_vector <- substring(year_vector, 2, nchar(year_vector)-1)
+# Converting to numeric
+year_vector <- as.numeric(year_vector)
+
+# Adding the year column
+table <- table %>% mutate(year = year_vector)
+
+return(table)
+}
+# End of function
+
+
+# Adding the useful columns.
+edx <- add_useful_columns(edx)
+```
+
+## Partitioning the data in test and train set and creating the RSME function
+
+Now we are ready to split the data into test and train set. We are also going to create a function to generate the RSME.
+
+
+```{r}
+# Leaving 10% of the data to test and creating test and train set
+test_index <- createDataPartition(y = edx$rating, times = 1,
+                                  p = 0.1, list = FALSE)
+train_set <- edx %>% slice(-test_index)
+test_set <- edx %>% slice(test_index)
+
+rm(test_index)
+
+# Creating a function to return the root-mean-square deviation
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+
+## Creating the model
+
+The data cleaning was done applying the function proposed in the data wrangling session.
+
+From now on, a series of steps are going to be performed to better model the problem. The logic must also be followed with the given code and its outputs.
+
+### Determining a mean rate and predicting it
+
+
+```{r}
+mu_hat <- mean(train_set$rating)
+mu_hat
+
+naive_rmse <- RMSE(test_set$rating, mu_hat)
+naive_rmse
+
+rmse_results <- data_frame(method = "Just the average", RMSE = naive_rmse)
+rmse_results
+```
+
+
+### Predicting using user mean rating
+
+
+```{r}
+user_mean_rmse <- RMSE(test_set$rating, test_set$user_mean_rating)
+user_mean_rmse
+
+rmse_results <- bind_rows(rmse_results, data_frame(method="User mean rating", 
+                                                   RMSE = user_mean_rmse ))
+rmse_results
+```
+
+
+### Predicting using movie mean rating
+
+
+```{r}
+movie_mean_rmse <- RMSE(test_set$rating, test_set$movie_mean_rating)
+movie_mean_rmse
+
+rmse_results <- bind_rows(rmse_results, data_frame(method="Movie mean rating", 
+                                                   RMSE = movie_mean_rmse ))
+rmse_results
+
+rm(movie_mean_rmse, naive_rmse, user_mean_rmse)
+```
+
+
+### Applying movie mean rating and user mean rating and finding a coeficient to get the best result
+
+
+```{r}
+# beta is the fraction for the movie
+beta <- seq(0.1, 1, 0.05)
+
+# Applying beta
+rmses <- sapply(beta, function(l){
+  val <- RMSE(test_set$rating, (train_set$movie_mean_rating*l + 
+                                  (1-l)*train_set$user_mean_rating))
+  return(val)
+})
+
+# Best beta
+qplot(beta, rmses)  
+beta <- beta[which.min(rmses)]
+
+movie_user_mean_rmse <- RMSE(test_set$rating, 
+                             (test_set$movie_mean_rating*beta + 
+                                (1-beta)*test_set$user_mean_rating))
+movie_user_mean_rmse
+
+rmse_results <- bind_rows(rmse_results, 
+                          data_frame(method="Movie & user mean rating", 
+                                     RMSE = movie_user_mean_rmse ))
+rmse_results
+```
+
+
+### Applying a linear regression and assesing the error
+
+
+```{r}
+lm_fit <- train_set %>%
+  lm(rating ~ movie_mean_rating + 
+       user_mean_rating + 
+       genre_mean_rating + 
+       user_genre_mean + 
+       year, data=.)
+
+mu_hat_linear <- predict(lm_fit, newdata = test_set, type = "response")
+
+lm_rmse <- RMSE(test_set$rating, mu_hat_linear)
+lm_rmse
+
+rmse_results <- bind_rows(rmse_results, 
+                          data_frame(method="Linear regression", 
+                                     RMSE = lm_rmse ))
+rmse_results
+```
+
+
+To assess the error a plot that compares the predicted rating and the actual rating was built. It is possible to observe that for higher ratings the model generally predicts a lower value, while for lower ratings the predicted value is higher.
+
+
+```{r}
+# Graph that plots true rating and estimate
+a <- test_set %>%
+  mutate(estimate = mu_hat_linear) %>%
+  mutate(diff = rating - estimate)
+
+box <- a %>% select(estimate, rating) %>%
+  mutate(rating = as_factor(rating)) %>%
+  ggplot(aes(rating, estimate)) +
+  geom_boxplot()
+
+smooth <- a %>% select(estimate, rating) %>%
+  ggplot(aes(rating, estimate)) +
+  geom_smooth()
+
+require(gridExtra)
+grid.arrange(box, smooth)
+rm(a, box, smooth)
+```
+
+
+Analysing the linear regression coeficcients it is possible to see that the movie mean rating and the user preference for an specific genre are the factors that most contribute for the prediction. 
+
+The coefficient was also multiplied to the mean value, so it is possible to understand as it increases or decreases the predicted rating. It is curious that the year and the genre mean rating have such coefficients when we compare it to results from the data exploration step. It is a way that the linear regression adjusted so other coefficients could better predict the rating.
+
+
+```{r}
+# Analysing the linear regression
+tidy(lm_fit)
+
+# Actually seeing as the coefficients relate to prediction
+
+lm_fit$coefficients[1]
+lm_fit$coefficients[2] * mean(test_set$movie_mean_rating )
+lm_fit$coefficients[3] * mean(test_set$user_mean_rating)
+lm_fit$coefficients[4] * mean(test_set$genre_mean_rating)
+lm_fit$coefficients[5] * mean(test_set$user_genre_mean)
+lm_fit$coefficients[6] * mean(test_set$year)
+```
+
+
+Although good, the estimate can get better. The minimum rate is 0.5 and the maximum is 5.
+
+
+```{r}
+# Set limits
+minV <- 0.5
+maxV <- 5
+
+# Limit vector
+mu_hat_linear <- sapply(mu_hat_linear, function(y) min(max(y,minV),maxV))
+
+lm_limited_rmse <- RMSE(test_set$rating, mu_hat_linear)
+lm_limited_rmse
+
+rmse_results <- bind_rows(rmse_results, 
+                          data_frame(method="Linear regression limited", 
+                                     RMSE = lm_limited_rmse ))
+rmse_results
+```
+
+
+### Predicting with smooth
+
+Can we still get a better prediction? During data exploration we saw that many values, like the year, were not linear. Let us try with the very smooth used in *ggplot mgcv::gam()*.
+
+
+```{r}
+library(mgcv)
+
+gam_fit <- train_set %>%
+  gam(rating ~ movie_mean_rating + 
+        user_mean_rating + 
+        genre_mean_rating + 
+        user_genre_mean + 
+        year, data=.)
+
+mu_hat_gam <- predict(gam_fit, newdata = test_set)
+
+gam_rmse <- RMSE(test_set$rating, mu_hat_gam)
+gam_rmse
+```
+
+
+There is no great change, so it does not worth the computational effort.
+
+
+```{r}
+rmse_results <- bind_rows(rmse_results, data_frame(method="GAM", RMSE = gam_rmse ))
+rmse_results
+```
+
+```{r include=FALSE}
+rm(gam_fit, mu_hat_gam, gam_rmse)
+```
+
+
+## Predicting the model
+
+The best cost-benefit method was linear regression with minimum and maximum values.
+
+Validating the model:
+
+
+```{r}
+validation <- add_useful_columns(validation)
+```
+
+
+Predicting and showing the RMSE:
+
+
+```{r}
+mu_hat_linear <- predict(lm_fit, newdata = validation)
+# Set limits
+minV <- 0.5
+maxV <- 5
+mu_hat_linear <- sapply(mu_hat_linear, function(y) min(max(y,minV),maxV))
+
+lm_rmse <- RMSE(validation$rating, mu_hat_linear)
+lm_rmse
+```
+
+
+# Results
+
+
+Using linear regression that trimmed maximum and minimun values allied with a proper data wrangling, a good result was obtained. The model performance was still very good when compared with other methods. 
+
+
+```{r echo=FALSE}
+final_RSME <- lm_rmse
+final_RSME
+```
+
+
+As there are less genres and the prediction cut was 4 movies, it is arguable the the regression could be using to much from the rating. For this reason, a new regression without considering the genre at all is presented.
+
+
+```{r}
+lm_fit_without_genre <- train_set %>%
+  lm(rating ~ movie_mean_rating + user_mean_rating + genre_mean_rating + year, data=.)
+
+mu_hat_linear_without_genre <- predict(lm_fit_without_genre, 
+                                       newdata = validation, type = "response")
+```
+
+
+The prediction is still very good:
+
+
+```{r}
+lm_rmse <- RMSE(validation$rating, mu_hat_linear_without_genre)
+lm_rmse
+```
+
+
+# Conclusion
+
+
+Using the knowledge aquired in the course a reasonable method and model was proposed to predict movie ratings. The data wrangling session was key to obtain the result shown. The main limitation of the model is that it is better predicting ratings for users that have more reviews. The final RSME is 0.84.
+
+
+```{r echo=FALSE}
+final_RSME
+```
+
+
+Different approaches were used, being linear regression the one that best balances computational effort with results.
+
+
+```{r}
+rmse_results
+```
+
+
+A possible future work would be to separate users by amount of ratings per genre they make. This way users with lower ratings could be adressed better. Another approach can also be developed to lower rating movies.
